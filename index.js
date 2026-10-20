@@ -1441,8 +1441,7 @@ async function onReady() {
   log("BOOT", "Cels siap. Voice watchdog, mood, dan event scheduler aktif.");
 }
 
-client.once("clientReady", onReady); // discord.js >= 14.22
-client.once("ready", onReady); // discord.js lama
+client.once("clientReady", onReady);
 
 // =====================================================
 // MESSAGE HANDLER
