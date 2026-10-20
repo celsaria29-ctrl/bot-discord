@@ -1,4 +1,4 @@
-"use strict";
+="use strict";
 
 // =====================================================
 // CELS - index.js (Phase 1: hardened core)
@@ -199,6 +199,11 @@ function envChannelId(name) {
 // Channel #main-chat (autonomous chat) dan #portal (event sistem, opsional).
 const MAIN_CHAT_CHANNEL_ID = envChannelId("MAIN_CHAT_CHANNEL_ID");
 const PORTAL_CHANNEL_ID = envChannelId("PORTAL_CHANNEL_ID");
+
+// Cels Admin = member dengan role "redflagfinalboss". Opsional: isi CELS_ADMIN_ROLE_ID
+// (ID role) supaya yang dicek adalah ID, bukan nama (lebih aman dari role palsu).
+const CELS_ADMIN_ROLE_NAME = "redflagfinalboss";
+const CELS_ADMIN_ROLE_ID = envChannelId("CELS_ADMIN_ROLE_ID");
 
 // AUTONOMOUS_CHAT_MIN_INTERVAL dalam MENIT.
 const AUTOCHAT_ENABLED = envBool("AUTONOMOUS_CHAT_ENABLED", true);
@@ -1834,7 +1839,7 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("mode")
-        .setDescription("Mode Cels")
+        .setDescription("Ubah mood Cels (khusus Cels Admin)")
         .setRequired(false)
         .addChoices(
           { name: "Normal", value: "normal" },
@@ -1900,13 +1905,11 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("experiment")
-    .setDescription("Mulai eksperimen Cels (admin)")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Mulai eksperimen Cels (admin)"),
 
   new SlashCommandBuilder()
     .setName("apocalypse")
-    .setDescription("Memulai event apocalypse (admin)")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Memulai event apocalypse (admin)"),
 
   new SlashCommandBuilder()
     .setName("chaos")
@@ -1915,7 +1918,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName("celsadmin")
     .setDescription("Kontrol sistem Cels (admin)")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addStringOption((option) =>
       option
         .setName("setting")
@@ -1951,8 +1953,59 @@ async function registerCommands() {
   }
 }
 
+// Cels Admin: role "redflagfinalboss" (atau CELS_ADMIN_ROLE_ID kalau diisi).
+// Pemilik server tetap diizinkan supaya tidak terkunci kalau role belum dibuat.
+// Command biasa (/diary, /memory, /profile, /forget, /mindread, /cels) TIDAK memakai cek ini.
+function isCelsAdmin(interaction) {
+  const member = interaction.member;
+
+  if (!member || !interaction.guild) return false;
+  if (interaction.guild.ownerId === interaction.user.id) return true;
+
+  const matches = (roleId, roleName) => {
+    if (CELS_ADMIN_ROLE_ID) return roleId === CELS_ADMIN_ROLE_ID;
+    return String(roleName || "").toLowerCase() === CELS_ADMIN_ROLE_NAME;
+  };
+
+  const roles = member.roles;
+
+  if (roles && roles.cache) {
+    return roles.cache.some((role) => matches(role.id, role.name));
+  }
+
+  if (Array.isArray(roles)) {
+    return roles.some((roleId) => {
+      const role = interaction.guild.roles.cache.get(roleId);
+      return matches(roleId, role?.name);
+    });
+  }
+
+  return false;
+}
+
 function isAdmin(interaction) {
-  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild));
+  return isCelsAdmin(interaction);
+}
+
+const ADMIN_ONLY_TEXT = "fitur ini khusus Cels Admin (role redflagfinalboss).";
+
+function checkAdminRole(guild) {
+  if (!guild) return;
+
+  if (CELS_ADMIN_ROLE_ID) {
+    if (!guild.roles.cache.has(CELS_ADMIN_ROLE_ID)) {
+      logWarn("ADMIN", "CELS_ADMIN_ROLE_ID tidak ditemukan di server. Hanya pemilik server yang bisa Cels Admin.");
+    }
+    return;
+  }
+
+  const found = guild.roles.cache.some(
+    (role) => role.name.toLowerCase() === CELS_ADMIN_ROLE_NAME
+  );
+
+  if (!found) {
+    logWarn("ADMIN", `Role "${CELS_ADMIN_ROLE_NAME}" belum ada di server. Hanya pemilik server yang bisa Cels Admin.`);
+  }
 }
 
 function adminStatusText() {
@@ -1992,6 +2045,7 @@ async function onReady() {
   log("DISCORD", `Cels online sebagai ${client.user.tag}`);
 
   await registerCommands();
+  checkAdminRole(client.guilds.cache.get(GUILD_ID));
   await validateMainChat();
   await connectToVC();
 
@@ -2298,6 +2352,14 @@ client.on("interactionCreate", async (interaction) => {
       const mode = interaction.options.getString("mode");
 
       if (mode) {
+        if (!isCelsAdmin(interaction)) {
+          await interaction.reply({
+            content: "ngubah mood Cels khusus Cels Admin (role redflagfinalboss). kalau cuma mau lihat mood, pakai /cels tanpa opsi.",
+            flags: EPHEMERAL,
+          });
+          return;
+        }
+
         celsMood = mode;
         await interaction.reply(`🎭 Mood Cels sekarang: **${mode}**`);
       } else {
@@ -2313,7 +2375,7 @@ client.on("interactionCreate", async (interaction) => {
     if (name === "celsadmin") {
       if (!isAdmin(interaction)) {
         await interaction.reply({
-          content: "fitur ini cuma buat admin (Manage Server).",
+          content: ADMIN_ONLY_TEXT,
           flags: EPHEMERAL,
         });
         return;
@@ -2516,7 +2578,7 @@ client.on("interactionCreate", async (interaction) => {
     if (name === "experiment") {
       if (!isAdmin(interaction)) {
         await interaction.reply({
-          content: "eksperimen cuma bisa dimulai admin (Manage Server).",
+          content: ADMIN_ONLY_TEXT,
           flags: EPHEMERAL,
         });
         return;
@@ -2557,7 +2619,7 @@ client.on("interactionCreate", async (interaction) => {
     if (name === "apocalypse") {
       if (!isAdmin(interaction)) {
         await interaction.reply({
-          content: "apocalypse cuma bisa dimulai admin (Manage Server).",
+          content: ADMIN_ONLY_TEXT,
           flags: EPHEMERAL,
         });
         return;
