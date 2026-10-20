@@ -1,4 +1,4 @@
-="use strict";
+"use strict";
 
 // =====================================================
 // CELS - index.js (Phase 1: hardened core)
