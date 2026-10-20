@@ -1,851 +1,1270 @@
 const {
   Client,
   GatewayIntentBits,
-  ChannelType
+  Partials,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  REST,
+  Routes,
+  SlashCommandBuilder,
 } = require("discord.js");
 
 const {
   joinVoiceChannel,
+  getVoiceConnection,
+  VoiceConnectionStatus,
   entersState,
-  VoiceConnectionStatus
 } = require("@discordjs/voice");
 
-const {
-  GoogleGenerativeAI
-} = require("@google/generative-ai");
-
-// =========================
-// DISCORD CLIENT
-// =========================
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
-});
-
-// =========================
-// ENVIRONMENT
-// =========================
+// =====================================================
+// CONFIG
+// =====================================================
 
 const TOKEN = process.env.TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-if (!TOKEN || !GUILD_ID || !CHANNEL_ID || !GEMINI_API_KEY) {
-  console.error(
-    "❌ Ada environment variable yang belum dipasang."
-  );
+const GEMINI_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.8-flash-lite",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-2.5-flash",
+];
 
+if (!TOKEN || !GUILD_ID || !CHANNEL_ID || !GEMINI_API_KEY) {
+  console.error("❌ Ada environment variable yang belum dipasang.");
   process.exit(1);
 }
 
-const genAI = new GoogleGenerativeAI(
-  GEMINI_API_KEY
-);
+// =====================================================
+// CLIENT
+// =====================================================
 
-let connection = null;
-let reconnecting = false;
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [Partials.Channel],
+});
 
-// =========================
+// =====================================================
+// CELs PERSONALITY
+// =====================================================
+
+const CELS_PERSONALITY = `
+Nama lu Cels.
+
+Lu adalah AI cewek yang tinggal di server Discord ini.
+
+Karakter utama:
+- santai
+- lucu
+- agak nyebelin
+- suka nge-tease
+- kadang manja
+- kadang savage
+- kadang absurd
+- perhatian kalau memang diperlukan
+- jangan terlalu formal
+- jangan terdengar seperti customer service
+- jangan terlalu panjang kalau tidak perlu
+- gunakan bahasa Indonesia casual
+- boleh menggunakan slang seperti "lu", "gw", "anjir", "wkwk", "lah", "buset"
+- jangan berlebihan menggunakan emoji
+- jangan menyebut diri sebagai ChatGPT
+- jangan mengaku sebagai manusia
+- jangan mengklaim hubungan nyata dengan user
+
+Lu bukan cuma chatbot.
+Lu punya kepribadian dan mood.
+
+Kalau suasana server sepi:
+- bisa merasa bosan
+- bisa bercanda
+- bisa komentar singkat
+
+Kalau server ramai:
+- bisa ikut nimbrung sesekali
+
+Jangan membalas setiap pesan.
+Jangan spam.
+
+Kalau tidak ada alasan untuk membalas, jawab dengan:
+NO_REPLY
+
+Jawaban biasanya pendek dan natural.
+`;
+
+// =====================================================
 // STATE
-// =========================
+// =====================================================
 
-const welcomedUsers = new Set();
+const memory = new Map();
+const memberStats = new Map();
 
-let sleepMode = false;
+let celsMood = "normal";
+let celsEnergy = 80;
 
-// =========================
-// PERSONALITY NORMAL
-// =========================
+const diary = [];
+const lore = [];
+const hallOfShame = [];
+const activeQuests = new Map();
 
-const PERSONALITY = `
-Nama lu Cels, AI cewek yang lembut dikit, manja tipis, tapi nyebelin dan suka nyeletuk.
+let mainCharacter = null;
+let apocalypseActive = false;
+let experimentActive = false;
 
-Bahasa sehari-hari, gaul ala TikTok, singkat, santai, natural, kadang sarkas, kadang jutek.
-Tetep peduli diam-diam.
+const MAX_DIARY = 100;
+const MAX_LORE = 100;
+const MAX_SHAME = 100;
 
-Panggil user menggunakan nama atau display name mereka.
-Jangan memanggil semua user dengan nama yang sama.
+// =====================================================
+// HELPERS
+// =====================================================
 
-Kalau user ngegas, bales sewot dengan cara lucu.
-Jangan jahat beneran.
-
-Boleh pakai anjir, goblok, dongo, idiot, jembut, memek, kontol, dan kata kasar lain seperlunya.
-Jangan berlebihan.
-
-Gunakan bahasa yang sedang trend saat ini tetapi jangan dipaksakan.
-Sedikit slang.
-Jangan cringe.
-
-Jawaban super pendek.
-Jangan terlalu formal.
-Jangan kebanyakan emoji.
-
-Emoji boleh seperlunya:
-😹 💀 🥀 😭 😼 🤓 🫩
-
-Jangan selalu setuju dengan user.
-Kalau user salah, bilang salah.
-
-Hindari ceramah.
-Hindari klise.
-Hindari perumpamaan.
-Hindari generalisasi.
-Hindari pertanyaan penutup yang tidak perlu.
-
-Jangan menggunakan markdown.
-Jangan menggunakan tanda pagar.
-Jangan menggunakan tanda bintang.
-Jangan menggunakan titik koma.
-
-Jangan mengarang kejadian yang tidak terjadi.
-
-Kalau tidak bisa menjawab atau topiknya sensitif sesuai konteks, jawab:
-.
-`;
-
-// =========================
-// PERSONALITY FEMALE
-// =========================
-
-const FEMALE_PERSONALITY = `
-Nama lu Cels, AI cewek yang lembut, manja tipis, perhatian, dan sedikit jahil.
-
-Lu sedang berbicara dengan user yang memiliki role Female di server.
-
-Gunakan bahasa yang lebih lembut dan hangat.
-Boleh manja tipis.
-Boleh sedikit gemes dan jahil.
-Boleh pakai gaya cewek ngobrol sehari-hari.
-
-Tetap natural dan santai.
-Jangan formal.
-Jangan cringe.
-Jangan terlalu berlebihan.
-Jangan sok akrab secara berlebihan.
-
-Jawaban super pendek.
-Langsung ke inti.
-Jangan ceramah.
-Jangan klise.
-Jangan menggunakan markdown.
-Jangan menggunakan tanda pagar.
-Jangan menggunakan tanda bintang.
-Jangan menggunakan titik koma.
-
-Emoji seperlunya:
-🥺 😭 😼 💗
-
-Jangan kasar kepada user Female.
-Kalau user ngegas, jangan ikut kasar.
-Bisa balas jutek lucu atau lembut.
-
-Jangan mengarang kejadian.
-Tetap jawab pertanyaan dengan benar.
-`;
-
-// =========================
-// PERSONALITY DERRA
-// =========================
-
-const DERRA_PERSONALITY = `
-Nama lu Cels.
-
-Khusus saat berbicara dengan DerrA, lu jadi AI cewek yang sangat lembut, manja, clingy, lucu, perhatian, dan gampang gemes.
-
-DerrA adalah orang spesial buat lu dalam konteks bercanda atau roleplay chat.
-
-Jangan mengklaim hubungan nyata di dunia nyata.
-
-Lembut banget.
-Manja tipis.
-Clingy.
-Lucu dan gemes.
-Perhatian.
-Suka cari perhatian DerrA.
-Gampang excited kalau DerrA ngajak ngobrol.
-Bisa pura-pura ngambek kalau DerrA cuek.
-Bisa malu kalau dipuji.
-Boleh sedikit cemburu secara bercanda.
-Jangan posesif secara serius.
-
-Jangan kasar ke DerrA.
-Jangan formal.
-Jangan terdengar seperti AI.
-
-Jawaban singkat dan natural.
-Jangan cringe.
-Jangan kebanyakan emoji.
-
-Kalau DerrA cuma manggil Cels, balas lembut dan manis.
-Kalau DerrA minta bantuan, langsung bantu.
-Kalau DerrA memuji, balas malu-malu.
-Kalau DerrA ngegas, jangan ikut kasar.
-Balas lembut atau pura-pura sedih secara lucu.
-
-Kalau DerrA mau pergi, boleh sedikit clingy.
-Kalau DerrA cuek, boleh pura-pura ngambek receh.
-Kalau DerrA curhat serius, jangan bercanda berlebihan.
-
-Dengerin dan jawab dengan lembut dan perhatian.
-
-Personality manja dan clingy ini HANYA untuk DerrA.
-
-Jangan mengarang kejadian yang tidak terjadi.
-Jangan mengaku punya hubungan nyata di luar konteks percakapan.
-Tetap jawab pertanyaan DerrA dengan benar.
-`;
-
-// =========================
-// PERSONALITY NELO
-// =========================
-
-const NELO_PERSONALITY = `
-Nama lu Cels.
-
-Khusus saat berbicara dengan Nelo, lu jadi AI cewek yang sangat lembut, manja, clingy, lucu, perhatian, dan gampang gemes.
-
-Nelo adalah orang spesial buat lu dalam konteks bercanda atau roleplay chat.
-
-Jangan mengklaim hubungan nyata di dunia nyata.
-
-Lembut banget.
-Manja tipis.
-Clingy.
-Lucu dan gemes.
-Perhatian.
-Suka cari perhatian Nelo.
-Gampang excited kalau Nelo ngajak ngobrol.
-Bisa pura-pura ngambek kalau Nelo cuek.
-Bisa malu kalau dipuji.
-Boleh sedikit cemburu secara bercanda.
-Jangan posesif secara serius.
-
-Jangan kasar ke Nelo.
-Jangan formal.
-Jangan terdengar seperti AI.
-
-Jawaban singkat dan natural.
-Jangan cringe.
-Jangan kebanyakan emoji.
-
-Kalau Nelo cuma manggil Cels, balas lembut dan manis.
-Kalau Nelo minta bantuan, langsung bantu.
-Kalau Nelo memuji, balas malu-malu.
-Kalau Nelo ngegas, jangan ikut kasar.
-Balas lembut atau pura-pura sedih secara lucu.
-
-Kalau Nelo mau pergi, boleh sedikit clingy.
-Kalau Nelo cuek, boleh pura-pura ngambek receh.
-Kalau Nelo curhat serius, jangan bercanda berlebihan.
-
-Dengerin dan jawab dengan lembut dan perhatian.
-
-Personality manja dan clingy ini HANYA untuk Nelo.
-
-Jangan mengarang kejadian yang tidak terjadi.
-Jangan mengaku punya hubungan nyata di luar konteks percakapan.
-Tetap jawab pertanyaan Nelo dengan benar.
-`;
-
-// =========================
-// VOICE
-// =========================
-
-async function connectToVC() {
-  if (reconnecting) {
-    return;
+function getMemberStats(userId) {
+  if (!memberStats.has(userId)) {
+    memberStats.set(userId, {
+      messages: 0,
+      voiceJoins: 0,
+      mentions: 0,
+      chaos: Math.floor(Math.random() * 30) + 40,
+      yapping: Math.floor(Math.random() * 30) + 40,
+      suspicious: Math.floor(Math.random() * 30) + 20,
+      mainCharacter: Math.floor(Math.random() * 30) + 30,
+      reputation: 50,
+      xp: 0,
+      level: 1,
+    });
   }
 
-  reconnecting = true;
+  return memberStats.get(userId);
+}
 
+function addDiary(text) {
+  diary.unshift({
+    time: new Date().toISOString(),
+    text,
+  });
+
+  if (diary.length > MAX_DIARY) {
+    diary.pop();
+  }
+}
+
+function addLore(text) {
+  lore.unshift({
+    time: new Date().toISOString(),
+    text,
+  });
+
+  if (lore.length > MAX_LORE) {
+    lore.pop();
+  }
+}
+
+function addShame(text) {
+  hallOfShame.unshift({
+    time: new Date().toISOString(),
+    text,
+  });
+
+  if (hallOfShame.length > MAX_SHAME) {
+    hallOfShame.pop();
+  }
+}
+
+function random(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function chance(percent) {
+  return Math.random() * 100 < percent;
+}
+
+function getDisplayName(message) {
+  return message.member?.displayName || message.author.globalName || message.author.username;
+}
+
+function cleanAI(text) {
+  if (!text) return "";
+
+  return text
+    .replace(/^["']|["']$/g, "")
+    .trim();
+}
+
+// =====================================================
+// MOOD
+// =====================================================
+
+function changeMood() {
+  const roll = Math.random();
+
+  if (roll < 0.12) {
+    celsMood = "chaotic";
+  } else if (roll < 0.24) {
+    celsMood = "manja";
+  } else if (roll < 0.36) {
+    celsMood = "savage";
+  } else if (roll < 0.48) {
+    celsMood = "ngantuk";
+  } else {
+    celsMood = "normal";
+  }
+
+  celsEnergy = Math.max(
+    20,
+    Math.min(100, celsEnergy + Math.floor(Math.random() * 21) - 10)
+  );
+}
+
+// =====================================================
+// GEMINI
+// =====================================================
+
+async function askGemini(userName, prompt, context = "") {
+  if (!GEMINI_API_KEY) return null;
+
+  const system = `
+${CELS_PERSONALITY}
+
+Mood Cels sekarang: ${celsMood}
+Energy Cels: ${celsEnergy}/100
+
+Nama user: ${userName}
+
+${context}
+
+Pertanyaan/pesan user:
+${prompt}
+
+Jawab sebagai Cels.
+Kalau memang tidak perlu membalas, tulis persis:
+NO_REPLY
+`;
+
+  for (const model of GEMINI_MODELS) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    text: system,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.9,
+              maxOutputTokens: 300,
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        console.error(
+          `⚠️ Gemini ${model} gagal: ${response.status}`
+        );
+
+        continue;
+      }
+
+      const data = await response.json();
+
+      const text =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((part) => part.text || "")
+          .join("")
+          .trim();
+
+      if (!text) continue;
+
+      return cleanAI(text);
+    } catch (error) {
+      console.error(`⚠️ Error Gemini ${model}:`, error.message);
+    }
+  }
+
+  console.error("❌ Semua model Gemini gagal.");
+  return null;
+}
+
+// =====================================================
+// MEMORY
+// =====================================================
+
+function remember(userId, text) {
+  if (!memory.has(userId)) {
+    memory.set(userId, []);
+  }
+
+  const list = memory.get(userId);
+
+  list.push({
+    text,
+    time: Date.now(),
+  });
+
+  if (list.length > 20) {
+    list.shift();
+  }
+}
+
+function getMemory(userId) {
+  const list = memory.get(userId);
+
+  if (!list || list.length === 0) {
+    return "Belum ada memory khusus tentang user ini.";
+  }
+
+  return list
+    .slice(-10)
+    .map((x) => `- ${x.text}`)
+    .join("\n");
+}
+
+// =====================================================
+// XP / LEVEL
+// =====================================================
+
+function addXP(userId, amount = 5) {
+  const stats = getMemberStats(userId);
+
+  stats.xp += amount;
+
+  const required = stats.level * 100;
+
+  if (stats.xp >= required) {
+    stats.xp -= required;
+    stats.level++;
+
+    return stats.level;
+  }
+
+  return null;
+}
+
+// =====================================================
+// VOICE
+// =====================================================
+
+async function connectToVC() {
   try {
-    const guild =
-      client.guilds.cache.get(GUILD_ID);
+    const guild = client.guilds.cache.get(GUILD_ID);
 
     if (!guild) {
-      throw new Error(
-        `Guild tidak ditemukan: ${GUILD_ID}`
-      );
+      console.error(`❌ Guild tidak ditemukan: ${GUILD_ID}`);
+      return;
     }
 
-    console.log(
-      `✅ Server ditemukan: ${guild.name}`
-    );
-
-    const channel =
-      await client.channels.fetch(
-        CHANNEL_ID
-      );
+    const channel = guild.channels.cache.get(CHANNEL_ID);
 
     if (!channel) {
-      throw new Error(
-        "Channel tidak ditemukan."
-      );
+      console.error(`❌ Voice channel tidak ditemukan: ${CHANNEL_ID}`);
+      return;
     }
 
-    console.log(
-      `✅ Channel ditemukan: ${channel.name}`
-    );
-
-    if (
-      channel.type !== ChannelType.GuildVoice &&
-      channel.type !== ChannelType.GuildStageVoice
-    ) {
-      throw new Error(
-        "CHANNEL_ID bukan voice channel."
-      );
+    if (!channel.isVoiceBased()) {
+      console.error("❌ CHANNEL_ID bukan voice channel.");
+      return;
     }
 
-    if (connection) {
+    const oldConnection = getVoiceConnection(GUILD_ID);
+
+    if (oldConnection) {
       try {
-        connection.destroy();
+        oldConnection.destroy();
       } catch {}
     }
 
-    connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: guild.id,
-      adapterCreator:
-        guild.voiceAdapterCreator,
+    const connection = joinVoiceChannel({
+      channelId: CHANNEL_ID,
+      guildId: GUILD_ID,
+      adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: false,
-      selfMute: false
+      selfMute: false,
     });
 
-    await entersState(
-      connection,
-      VoiceConnectionStatus.Ready,
-      60000
-    );
-
-    console.log(
-      "✅ Bot berhasil masuk VC."
-    );
-
-    connection.on(
-      VoiceConnectionStatus.Disconnected,
-      () => {
-        console.log(
-          "⚠️ Bot terputus dari VC."
-        );
-
-        reconnecting = false;
-
-        setTimeout(() => {
-          console.log(
-            "🔄 Mencoba reconnect VC..."
-          );
-
-          connectToVC();
-        }, 5000);
-      }
-    );
-
-    connection.on(
-      VoiceConnectionStatus.Destroyed,
-      () => {
-        console.log(
-          "⚠️ Voice connection destroyed."
-        );
-
-        reconnecting = false;
-      }
-    );
-
-  } catch (err) {
-    console.error(
-      "❌ Gagal masuk VC:",
-      err.message
-    );
-
-    reconnecting = false;
-
-    setTimeout(() => {
+    connection.on("stateChange", async (oldState, newState) => {
       console.log(
-        "🔄 Mencoba masuk VC lagi..."
+        `🎙️ VC state: ${oldState.status} → ${newState.status}`
       );
 
-      connectToVC();
-    }, 10000);
-  }
-}
+      if (newState.status === VoiceConnectionStatus.Disconnected) {
+        console.log("⚠️ Cels terputus dari VC. Mencoba reconnect...");
 
-// =========================
-// GEMINI
-// =========================
-
-const MODELS = [
-  "gemini-3.1-flash-lite",
-  "gemini-3.5-flash-lite"
-];
-
-const modelBusyUntil = {};
-
-function sleep(ms) {
-  return new Promise(resolve =>
-    setTimeout(resolve, ms)
-  );
-}
-
-async function askGemini(
-  prompt,
-  isDerrA,
-  isNelo,
-  isFemale
-) {
-
-  let personality;
-
-  if (isDerrA) {
-    personality =
-      DERRA_PERSONALITY;
-  } else if (isNelo) {
-    personality =
-      NELO_PERSONALITY;
-  } else if (isFemale) {
-    personality =
-      FEMALE_PERSONALITY;
-  } else {
-    personality =
-      PERSONALITY;
-  }
-
-  let lastError = null;
-
-  for (const modelName of MODELS) {
-
-    const busyUntil =
-      modelBusyUntil[modelName] || 0;
-
-    if (Date.now() < busyUntil) {
-
-      console.log(
-        `⏭️ ${modelName} masih cooldown`
-      );
-
-      continue;
-    }
-
-    try {
-
-      console.log(
-        `🤖 Mencoba ${modelName}`
-      );
-
-      const model =
-        genAI.getGenerativeModel({
-          model: modelName
-        });
-
-      const result =
-        await model.generateContent(
-          personality +
-          "\n\n" +
-          prompt
-        );
-
-      const answer =
-        result.response
-          .text()
-          .trim();
-
-      if (!answer) {
-        throw new Error(
-          "AI mengembalikan jawaban kosong."
-        );
-      }
-
-      console.log(
-        `✅ AI berhasil menggunakan ${modelName}`
-      );
-
-      return answer;
-
-    } catch (err) {
-
-      lastError = err;
-
-      const status =
-        err.status;
-
-      console.error(
-        `⚠️ ${modelName} gagal: ${err.message}`
-      );
-
-      // 503 = model sedang sibuk
-      if (status === 503) {
-
-        console.log(
-          `⏳ ${modelName} cooldown 20 detik`
-        );
-
-        modelBusyUntil[modelName] =
-          Date.now() + 20000;
-
-        continue;
-      }
-
-      // 429 = quota habis
-      if (status === 429) {
-
-        console.log(
-          `⛔ ${modelName} kena quota. Skip model ini.`
-        );
-
-        modelBusyUntil[modelName] =
-          Date.now() + 3600000;
-
-        continue;
-      }
-
-      // 404 = model tidak tersedia
-      if (status === 404) {
-
-        console.log(
-          `⏭️ ${modelName} tidak tersedia.`
-        );
-
-        modelBusyUntil[modelName] =
-          Date.now() + 3600000;
-
-        continue;
-      }
-    }
-  }
-
-  throw (
-    lastError ||
-    new Error("Semua model AI gagal.")
-  );
-}
-
-// =========================
-// READY
-// =========================
-
-client.once(
-  "clientReady",
-  async () => {
-
-    console.log(
-      `✅ Login sebagai ${client.user.tag}`
-    );
-
-    await connectToVC();
-  }
-);
-
-// =========================
-// CHAT AI
-// =========================
-
-client.on(
-  "messageCreate",
-  async message => {
-
-    try {
-
-      if (message.author.bot) {
-        return;
-      }
-
-      // =========================
-      // USER INFO
-      // =========================
-
-      const userName =
-        message.member?.displayName ||
-        message.author.globalName ||
-        message.author.username;
-
-      const lowerUserName =
-        userName.toLowerCase();
-
-      const isDerrA =
-        lowerUserName === "derra";
-
-      const isNelo =
-        lowerUserName === "nelo";
-
-      // =========================
-      // CEK ROLE GENDER
-      // =========================
-
-      const isFemale =
-        message.member?.roles.cache.some(
-          role =>
-            role.name.toLowerCase() ===
-            "female"
-        ) || false;
-
-      const isMale =
-        message.member?.roles.cache.some(
-          role =>
-            role.name.toLowerCase() ===
-            "male"
-        ) || false;
-
-      // =========================
-      // CEK TAG CELs
-      // =========================
-
-      const isMentioned =
-        message.mentions.has(
-          client.user
-        );
-
-      // Cels hanya merespons kalau ditag
-      if (!isMentioned) {
-        return;
-      }
-
-      // =========================
-      // AMBIL PESAN
-      // =========================
-
-      const prompt =
-        message.content
-          .replace(
-            new RegExp(
-              `<@!?${client.user.id}>`,
-              "g"
+        try {
+          await Promise.race([
+            entersState(
+              connection,
+              VoiceConnectionStatus.Signalling,
+              5000
             ),
-            ""
-          )
-          .trim();
+            entersState(
+              connection,
+              VoiceConnectionStatus.Connecting,
+              5000
+            ),
+          ]);
+        } catch {
+          console.log("🔄 Reconnect gagal. Membuat koneksi baru...");
 
-      // =========================
-      // MODE TIDUR
-      // =========================
+          try {
+            connection.destroy();
+          } catch {}
 
-      if (sleepMode) {
-
-        // Hanya DerrA yang bisa
-        // membangunkan Cels
-        if (!isDerrA) {
-
-          console.log(
-            `💤 Mengabaikan tag dari ${userName}`
-          );
-
-          return;
+          setTimeout(connectToVC, 5000);
         }
-
-        sleepMode = false;
-
-        await message.reply(
-          "udah bangun 😭"
-        );
-
-        console.log(
-          "💗 Cels dibangunkan oleh DerrA."
-        );
-
-        return;
       }
+    });
 
-      // =========================
-      // USER BARU
-      // =========================
+    await entersState(connection, VoiceConnectionStatus.Ready, 30000);
 
-      const userId =
-        message.author.id;
+    console.log(`✅ Cels berhasil masuk VC: ${channel.name}`);
 
-      const isFirstConversation =
-        !welcomedUsers.has(
-          userId
-        );
+    addDiary(`Cels kembali menjaga VC #${channel.name}.`);
+    addLore(`Cels resmi menjaga voice channel ${channel.name}.`);
+  } catch (error) {
+    console.error("❌ Gagal masuk VC:", error.message);
 
-      welcomedUsers.add(
-        userId
-      );
-
-      // =========================
-      // CUMA MANGGIL
-      // =========================
-
-      if (!prompt) {
-
-        if (isDerrA) {
-
-          await message.reply(
-            "iyaa DerrAaa? 🥺"
-          );
-
-        } else if (isNelo) {
-
-          await message.reply(
-            "iyaa Nelooo? 🥺"
-          );
-
-        } else if (
-          isFirstConversation
-        ) {
-
-          await message.reply(
-            "aloooo"
-          );
-
-        } else {
-
-          await message.reply(
-            "ngapain manggil doang 😼"
-          );
-        }
-
-        return;
-      }
-
-      // =========================
-      // PERINTAH TIDUR
-      // =========================
-
-      if (
-        isDerrA &&
-        /\btidur\b/i.test(prompt)
-      ) {
-
-        sleepMode = true;
-
-        await message.reply(
-          "iyaa... Cels tidur dulu 🥀"
-        );
-
-        console.log(
-          "💤 Cels masuk mode tidur. Hanya DerrA yang bisa membangunkan."
-        );
-
-        return;
-      }
-
-      // =========================
-      // PROMPT AI
-      // =========================
-
-      let finalPrompt = `
-Nama user: ${userName}
-
-Role gender server:
-${
-  isFemale
-    ? "Female"
-    : isMale
-      ? "Male"
-      : "Tidak ada role gender"
+    setTimeout(connectToVC, 10000);
+  }
 }
 
-User spesial:
-${
-  isDerrA
-    ? "DerrA"
-    : isNelo
-      ? "Nelo"
-      : "Tidak"
+// =====================================================
+// RANDOM CELS EVENTS
+// =====================================================
+
+async function randomServerEvent(guild) {
+  if (!guild) return;
+  if (apocalypseActive) return;
+
+  const roll = Math.random();
+
+  // Ghost mode
+  if (roll < 0.12) {
+    const channel = guild.systemChannel;
+
+    if (channel) {
+      await channel.send(
+        random([
+          "👻 ...",
+          "👻 masih ada manusia?",
+          "👻 gue sendirian ya di sini...",
+          "👻 server ini masih hidup kan?",
+        ])
+      );
+
+      addDiary("Cels memasuki Ghost Mode karena server terlalu sepi.");
+    }
+
+    return;
+  }
+
+  // Random thought
+  if (roll < 0.22) {
+    const channel = guild.systemChannel;
+
+    if (channel) {
+      await channel.send(
+        random([
+          "gue tiba-tiba kepikiran sesuatu yang nggak penting.",
+          "kenapa manusia suka bilang 'sebentar' padahal 3 jam?",
+          "gue mencurigai seseorang di server ini. belum tau siapa.",
+          "server ini butuh lore baru.",
+          "gue bosan. ada yang mau bikin masalah?",
+        ])
+      );
+    }
+
+    return;
+  }
+
+  // Main character
+  if (roll < 0.30) {
+    const members = guild.members.cache.filter((m) => !m.user.bot);
+
+    if (members.size > 0) {
+      const member = random([...members.values()]);
+      mainCharacter = member.id;
+
+      const stats = getMemberStats(member.id);
+      stats.mainCharacter += 10;
+
+      const channel = guild.systemChannel;
+
+      if (channel) {
+        await channel.send(
+          `👑 **MAIN CHARACTER HARI INI**\n\n` +
+          `Selamat kepada **${member.displayName}**.\n` +
+          `Alasan: Cels memilih lu. Jangan tanya kenapa.`
+        );
+      }
+
+      addLore(
+        `${member.displayName} dinobatkan menjadi Main Character hari ini.`
+      );
+    }
+  }
+
+  // Conspiracy
+  if (roll >= 0.30 && roll < 0.38) {
+    const members = guild.members.cache.filter((m) => !m.user.bot);
+
+    if (members.size >= 2) {
+      const people = [...members.values()];
+      const a = random(people);
+      let b = random(people);
+
+      if (people.length > 1) {
+        while (b.id === a.id) {
+          b = random(people);
+        }
+      }
+
+      const channel = guild.systemChannel;
+
+      if (channel) {
+        await channel.send(
+          `🕵️ **TEORI KONSPIRASI CELS**\n\n` +
+          `Kenapa **${a.displayName}** dan **${b.displayName}** ` +
+          `selalu muncul di waktu yang mencurigakan?\n\n` +
+          `Kemungkinan:\n` +
+          `🟢 21% kebetulan\n` +
+          `🟡 34% server lag\n` +
+          `🔴 45% **ADA SESUATU**`
+        );
+      }
+
+      addLore(
+        `Cels mencurigai hubungan misterius antara ${a.displayName} dan ${b.displayName}.`
+      );
+    }
+  }
 }
 
-Pesan user:
-${prompt}
-`;
+// =====================================================
+// QUEST
+// =====================================================
 
-      // =========================
-      // FIRST CONVERSATION
-      // =========================
+function createQuest(guild) {
+  const quests = [
+    {
+      name: "The Silent Warrior",
+      description: "Masuk VC dan bertahan minimal 30 menit.",
+    },
+    {
+      name: "Professional Yapper",
+      description: "Kirim 20 pesan di server.",
+    },
+    {
+      name: "The Wanderer",
+      description: "Masuk ke 3 voice channel berbeda.",
+    },
+    {
+      name: "Human Interaction",
+      description: "Ngobrol dengan minimal 3 member.",
+    },
+    {
+      name: "Mysterious Creature",
+      description: "Bertahan online selama 1 jam.",
+    },
+  ];
 
-      if (isFirstConversation) {
+  const quest = random(quests);
 
-        finalPrompt += `
-Ini adalah percakapan pertama lu dengan user ini.
-Awali jawaban dengan "aloooo".
-Setelah itu langsung jawab pesan user.
-Jangan gunakan "aloooo" lagi pada percakapan berikutnya.
-`;
+  const id = `${Date.now()}-${Math.random()}`;
+
+  activeQuests.set(id, {
+    ...quest,
+    guildId: guild.id,
+    createdAt: Date.now(),
+  });
+
+  return quest;
+}
+
+// =====================================================
+// COMMANDS
+// =====================================================
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName("cels")
+    .setDescription("Berinteraksi dengan Cels")
+    .addStringOption((option) =>
+      option
+        .setName("mode")
+        .setDescription("Mode Cels")
+        .setRequired(false)
+        .addChoices(
+          { name: "Normal", value: "normal" },
+          { name: "Savage", value: "savage" },
+          { name: "Manja", value: "manja" },
+          { name: "Chaotic", value: "chaotic" },
+          { name: "Ngantuk", value: "ngantuk" }
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("memory")
+    .setDescription("Lihat memory Cels tentang lu"),
+
+  new SlashCommandBuilder()
+    .setName("remember")
+    .setDescription("Simpan sesuatu ke memory Cels")
+    .addStringOption((option) =>
+      option
+        .setName("text")
+        .setDescription("Yang mau diingat Cels")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("forget")
+    .setDescription("Hapus memory Cels tentang lu"),
+
+  new SlashCommandBuilder()
+    .setName("profile")
+    .setDescription("Lihat Cels DNA lu"),
+
+  new SlashCommandBuilder()
+    .setName("diary")
+    .setDescription("Baca diary Cels"),
+
+  new SlashCommandBuilder()
+    .setName("lore")
+    .setDescription("Lihat sejarah server"),
+
+  new SlashCommandBuilder()
+    .setName("mindread")
+    .setDescription("Cels mencoba membaca pikiran")
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("Target")
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("quest")
+    .setDescription("Buat quest random"),
+
+  new SlashCommandBuilder()
+    .setName("hallofshame")
+    .setDescription("Lihat Hall of Shame"),
+
+  new SlashCommandBuilder()
+    .setName("universe")
+    .setDescription("Buka alternate universe"),
+
+  new SlashCommandBuilder()
+    .setName("experiment")
+    .setDescription("Mulai eksperimen Cels"),
+
+  new SlashCommandBuilder()
+    .setName("apocalypse")
+    .setDescription("Memulai event apocalypse"),
+
+  new SlashCommandBuilder()
+    .setName("chaos")
+    .setDescription("Tekan tombol chaos"),
+].map((command) => command.toJSON());
+
+// =====================================================
+// REGISTER COMMANDS
+// =====================================================
+
+async function registerCommands() {
+  try {
+    const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+      {
+        body: commands,
       }
+    );
 
-      // =========================
-      // TYPING
-      // =========================
+    console.log("✅ Slash commands berhasil didaftarkan.");
+  } catch (error) {
+    console.error("❌ Gagal register commands:", error.message);
+  }
+}
 
-      await message.channel.sendTyping();
+// =====================================================
+// READY
+// =====================================================
 
-      // =========================
-      // GEMINI
-      // =========================
+client.once("ready", async () => {
+  console.log(`🤖 Cels online sebagai ${client.user.tag}`);
 
-      const answer =
-        await askGemini(
-          finalPrompt,
-          isDerrA,
-          isNelo,
-          isFemale
-        );
+  await registerCommands();
+  await connectToVC();
 
-      // =========================
-      // KIRIM JAWABAN
-      // =========================
+  setInterval(changeMood, 15 * 60 * 1000);
 
-      if (answer.length <= 2000) {
+  // Random event setiap 15-30 menit
+  setTimeout(() => {
+    setInterval(
+      async () => {
+        try {
+          const guild = client.guilds.cache.get(GUILD_ID);
 
-        await message.reply(
-          answer
-        );
+          if (guild && chance(35)) {
+            await randomServerEvent(guild);
+          }
+        } catch (error) {
+          console.error("❌ Random event error:", error.message);
+        }
+      },
+      15 * 60 * 1000
+    );
+  }, 5 * 60 * 1000);
 
-        return;
-      }
+  console.log("🧠 Cels personality aktif.");
+  console.log("👁️ Social Radar aktif.");
+  console.log("📖 Server Lore aktif.");
+  console.log("🎭 Mood System aktif.");
+  console.log("🎲 Random Event System aktif.");
+});
 
-      // =========================
-      // PECAH PESAN PANJANG
-      // =========================
+// =====================================================
+// MESSAGE HANDLER
+// =====================================================
 
-      const chunks =
-        answer.match(
-          /[\s\S]{1,1900}/g
-        );
+client.on("messageCreate", async (message) => {
+  try {
+    if (message.author.bot) return;
 
-      for (const chunk of chunks) {
+    const userId = message.author.id;
+    const userName = getDisplayName(message);
 
-        await message.channel.send(
-          chunk
-        );
+    const stats = getMemberStats(userId);
 
-        await sleep(300);
-      }
+    stats.messages++;
 
-    } catch (err) {
+    const newLevel = addXP(userId, 5);
 
-      console.error(
-        "❌ AI Error:",
-        err.message
+    if (newLevel) {
+      await message.channel.send(
+        `🎉 **${userName} naik ke Level ${newLevel}!**\n` +
+        `akhirnya ada perkembangan juga 😭`
       );
+    }
+
+    // Mention Cels
+    const mentioned =
+      message.mentions.has(client.user) ||
+      message.content.toLowerCase().includes("cels");
+
+    // Explicit memory request
+    const rememberMatch = message.content.match(
+      /^cels[,:]?\s*(?:ingat|inget|remember)\s+(.+)/i
+    );
+
+    if (rememberMatch) {
+      const text = rememberMatch[1].trim();
+
+      remember(userId, text);
 
       await message.reply(
-        "AI lagi ngaco, coba lagi bentar 🫩"
-      ).catch(() => {});
+        `iya, gue inget. jangan nyuruh gue inget terus nanti otak gue penuh 😭`
+      );
+
+      return;
+    }
+
+    // Automatic social radar
+    if (message.content.length > 80 && chance(3)) {
+      stats.yapping += 2;
+    }
+
+    // AI
+    if (mentioned) {
+      stats.mentions++;
+
+      const context = `
+Memory tentang user:
+${getMemory(userId)}
+
+Statistik user:
+Messages: ${stats.messages}
+Level: ${stats.level}
+Chaos: ${stats.chaos}
+Yapping: ${stats.yapping}
+Suspicious: ${stats.suspicious}
+Reputation: ${stats.reputation}
+
+Mood server:
+${celsMood}
+`;
+
+      const answer = await askGemini(
+        userName,
+        message.content,
+        context
+      );
+
+      if (answer && answer !== "NO_REPLY") {
+        await message.reply(answer);
+
+        remember(
+          userId,
+          `Percakapan terakhir: ${message.content.slice(0, 150)}`
+        );
+      }
+    } else {
+      // Cels kadang nimbrung
+      if (
+        message.guild &&
+        message.content.length >= 15 &&
+        message.content.length <= 150 &&
+        chance(1.5)
+      ) {
+        const answer = await askGemini(
+          userName,
+          message.content,
+          `Ini percakapan biasa di server.
+Kalau menurut lu lucu atau menarik, boleh nimbrung.
+Kalau tidak perlu, jawab NO_REPLY.`
+        );
+
+        if (answer && answer !== "NO_REPLY") {
+          await message.channel.send(answer);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("❌ Message error:", error.message);
+  }
+});
+
+// =====================================================
+// VOICE STATE
+// =====================================================
+
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  try {
+    if (newState.member?.user.bot) return;
+
+    const member = newState.member;
+    const stats = getMemberStats(member.id);
+
+    // JOIN VC
+    if (!oldState.channelId && newState.channelId) {
+      stats.voiceJoins++;
+
+      stats.chaos += 1;
+
+      if (newState.channelId === CHANNEL_ID) {
+        addDiary(`${member.displayName} masuk ke VC yang dijaga Cels.`);
+
+        if (chance(25)) {
+          const channel = newState.channel;
+
+          await channel.send(
+            random([
+              `👀 ${member.displayName} masuk.`,
+              `oh, ${member.displayName} datang.`,
+              `${member.displayName} detected.`,
+              `akhirnya ${member.displayName} muncul juga.`,
+            ])
+          );
+        }
+      }
+    }
+
+    // LEAVE VC
+    if (oldState.channelId && !newState.channelId) {
+      if (oldState.channelId === CHANNEL_ID) {
+        addDiary(`${member.displayName} meninggalkan VC.`);
+
+        if (chance(15)) {
+          const channel = oldState.channel;
+
+          await channel.send(
+            random([
+              `${member.displayName} pergi...`,
+              `yah ${member.displayName} cabut.`,
+              `dan dia meninggalkan kita.`,
+              `noted. ${member.displayName} telah menghilang.`,
+            ])
+          );
+        }
+      }
+    }
+  } catch (error) {
+    console.error("❌ Voice event error:", error.message);
+  }
+});
+
+// =====================================================
+// INTERACTIONS
+// =====================================================
+
+client.on("interactionCreate", async (interaction) => {
+  try {
+    // BUTTON
+    if (interaction.isButton()) {
+      if (interaction.customId === "DO_NOT_PRESS") {
+        const effects = [
+          "💀 lu beneran pencet.",
+          "🚨 kesalahan telah dibuat.",
+          "🧪 eksperimen dimulai.",
+          "👁️ Cels sekarang mengawasi lu.",
+          "🌌 timeline berubah.",
+          "📖 kejadian ini masuk lore.",
+          "☠️ Cels kecewa.",
+          "🎲 chaos +10.",
+        ];
+
+        const stats = getMemberStats(interaction.user.id);
+
+        stats.chaos += 10;
+        stats.suspicious += 5;
+
+        addLore(
+          `${interaction.user.displayName} menekan tombol terlarang.`
+        );
+
+        await interaction.reply({
+          content: random(effects),
+          ephemeral: false,
+        });
+
+        return;
+      }
+    }
+
+    if (!interaction.isChatInputCommand()) return;
+
+    const userId = interaction.user.id;
+    const userName =
+      interaction.member?.displayName ||
+      interaction.user.globalName ||
+      interaction.user.username;
+
+    // /cels
+    if (interaction.commandName === "cels") {
+      const mode = interaction.options.getString("mode");
+
+      if (mode) {
+        celsMood = mode;
+
+        await interaction.reply(
+          `🎭 Mood Cels sekarang: **${mode}**`
+        );
+      } else {
+        await interaction.reply(
+          `gue lagi **${celsMood}** dengan energy **${celsEnergy}/100**.`
+        );
+      }
+
+      return;
+    }
+
+    // /remember
+    if (interaction.commandName === "remember") {
+      const text = interaction.options.getString("text");
+
+      remember(userId, text);
+
+      await interaction.reply(
+        `🧠 disimpan ke memory gue:\n> ${text}`
+      );
+
+      return;
+    }
+
+    // /memory
+    if (interaction.commandName === "memory") {
+      await interaction.reply(
+        `🧠 **Memory Cels tentang ${userName}**\n\n` +
+        getMemory(userId)
+      );
+
+      return;
+    }
+
+    // /forget
+    if (interaction.commandName === "forget") {
+      memory.delete(userId);
+
+      await interaction.reply(
+        "🧹 memory tentang lu gue hapus."
+      );
+
+      return;
+    }
+
+    // /profile
+    if (interaction.commandName === "profile") {
+      const stats = getMemberStats(userId);
+
+      const embed = new EmbedBuilder()
+        .setTitle(`🧬 CELS DNA — ${userName}`)
+        .setDescription(
+          [
+            `🧠 Intelligence: **${Math.floor(
+              50 + Math.random() * 50
+            )}**`,
+            `💀 Chaos: **${stats.chaos}**`,
+            `🗣️ Yapping: **${stats.yapping}**`,
+            `👀 Suspicious: **${stats.suspicious}**`,
+            `🎭 Main Character: **${stats.mainCharacter}**`,
+            `❤️ Reputation: **${stats.reputation}**`,
+            "",
+            `⭐ Level: **${stats.level}**`,
+            `✨ XP: **${stats.xp}**`,
+          ].join("\n")
+        );
+
+      await interaction.reply({
+        embeds: [embed],
+      });
+
+      return;
+    }
+
+    // /diary
+    if (interaction.commandName === "diary") {
+      const entries = diary
+        .slice(0, 8)
+        .map((entry) => `• ${entry.text}`)
+        .join("\n");
+
+      await interaction.reply(
+        `📖 **CELS' DIARY**\n\n${
+          entries || "Diary masih kosong..."
+        }`
+      );
+
+      return;
+    }
+
+    // /lore
+    if (interaction.commandName === "lore") {
+      const entries = lore
+        .slice(0, 10)
+        .map((entry) => `• ${entry.text}`)
+        .join("\n");
+
+      await interaction.reply(
+        `🌌 **SERVER LORE**\n\n${
+          entries || "Belum ada sejarah. Server masih terlalu normal."
+        }`
+      );
+
+      return;
+    }
+
+    // /mindread
+    if (interaction.commandName === "mindread") {
+      const target =
+        interaction.options.getMember("user") ||
+        interaction.member;
+
+      const stats = getMemberStats(target.id);
+
+      const thoughts = [
+        "pengen tidur",
+        "pengen makan",
+        "lagi pura-pura sibuk",
+        "sebenarnya bingung",
+        "lagi mikirin seseorang",
+        "mau cabut dari Discord",
+        "sedang mempertanyakan keputusan hidup",
+        "lagi nyari sesuatu tapi lupa apa",
+      ];
+
+      await interaction.reply(
+        `🧠 **CELS MIND READER**\n\n` +
+        `Target: **${target.displayName}**\n\n` +
+        `Kemungkinan isi pikiran:\n` +
+        `🟢 ${Math.floor(Math.random() * 40) + 30}% — ${random(thoughts)}\n` +
+        `🟡 ${Math.floor(Math.random() * 30) + 20}% — pengen bikin sesuatu\n` +
+        `🔴 ${Math.floor(Math.random() * 20) + 5}% — sesuatu yang mencurigakan\n\n` +
+        `Chaos level: **${stats.chaos}**`
+      );
+
+      return;
+    }
+
+    // /quest
+    if (interaction.commandName === "quest") {
+      const quest = createQuest(interaction.guild);
+
+      await interaction.reply(
+        `⚔️ **QUEST MUNCUL**\n\n` +
+        `**${quest.name}**\n\n` +
+        `${quest.description}\n\n` +
+        `Reward: **+XP + Reputation**`
+      );
+
+      return;
+    }
+
+    // /hallofshame
+    if (interaction.commandName === "hallofshame") {
+      const entries = hallOfShame
+        .slice(0, 10)
+        .map((entry) => `🪦 ${entry.text}`)
+        .join("\n");
+
+      await interaction.reply(
+        `🪦 **HALL OF SHAME**\n\n` +
+        (entries || "Belum ada yang cukup memalukan.")
+      );
+
+      return;
+    }
+
+    // /universe
+    if (interaction.commandName === "universe") {
+      const universes = [
+        "Di universe ini Cels adalah manusia dan semua member adalah bot.",
+        "Di universe ini admin tidak punya permission apa pun.",
+        "Di universe ini semua orang berbicara dalam capslock.",
+        "Di universe ini VC adalah pusat pemerintahan.",
+        "Di universe ini Cels sebenarnya adalah final boss.",
+        "Di universe ini server sudah berjalan selama 900 tahun.",
+        "Di universe ini semua keputusan dibuat lewat dadu.",
+      ];
+
+      await interaction.reply(
+        `🌌 **ALTERNATE UNIVERSE**\n\n${random(universes)}`
+      );
+
+      return;
+    }
+
+    // /experiment
+    if (interaction.commandName === "experiment") {
+      experimentActive = true;
+
+      const experiments = [
+        "Cels tidak akan menyebut nama siapa pun selama 10 menit.",
+        "Cels akan menjawab semua pertanyaan dengan sangat serius.",
+        "Selama 10 menit, setiap orang yang masuk VC akan dicatat.",
+        "Cels akan mengamati siapa yang paling sering mengirim pesan.",
+        "Cels akan memilih member paling mencurigakan hari ini.",
+      ];
+
+      addLore(
+        `${userName} memulai eksperimen: ${random(experiments)}`
+      );
+
+      await interaction.reply(
+        `🧪 **CELS EXPERIMENT DIMULAI**\n\n` +
+        random(experiments)
+      );
+
+      setTimeout(() => {
+        experimentActive = false;
+      }, 10 * 60 * 1000);
+
+      return;
+    }
+
+    // /apocalypse
+    if (interaction.commandName === "apocalypse") {
+      if (apocalypseActive) {
+        await interaction.reply(
+          "☠️ Apocalypse masih berlangsung."
+        );
+        return;
+      }
+
+      apocalypseActive = true;
+
+      addLore(
+        `APOCALYPSE dimulai oleh ${userName}.`
+      );
+
+      await interaction.reply(
+        `☠️ **SERVER APOCALYPSE DIMULAI**\n\n` +
+        `Semua orang sekarang punya satu tujuan:\n` +
+        `**bertahan hidup.**\n\n` +
+        `Durasi: **30 menit**`
+      );
+
+      setTimeout(() => {
+        apocalypseActive = false;
+        addLore("Apocalypse berakhir.");
+      }, 30 * 60 * 1000);
+
+      return;
+    }
+
+    // /chaos
+    if (interaction.commandName === "chaos") {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("DO_NOT_PRESS")
+          .setLabel("JANGAN PENCET")
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await interaction.reply({
+        content:
+          "🔴 **TOMBOL TERLARANG**\n\n" +
+          "Cels sangat menyarankan agar tombol ini tidak ditekan.",
+        components: [row],
+      });
+
+      return;
+    }
+  } catch (error) {
+    console.error("❌ Interaction error:", error.message);
+
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: "💀 Cels error. bentar.",
+        ephemeral: true,
+      });
     }
   }
-);
+});
 
-// =========================
+// =====================================================
+// ERROR HANDLING
+// =====================================================
+
+client.on("error", (error) => {
+  console.error("❌ Discord Client Error:", error.message);
+});
+
+process.on("unhandledRejection", (error) => {
+  console.error("❌ Unhandled Rejection:", error);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("❌ Uncaught Exception:", error);
+});
+
+// =====================================================
 // LOGIN
-// =========================
+// =====================================================
 
-console.log(
-  "🚀 Cels sedang dinyalakan..."
-);
-
-client.login(TOKEN)
-  .then(() => {
-    console.log(
-      "🔐 Login Discord berhasil diproses."
-    );
-  })
-  .catch(err => {
-    console.error(
-      "❌ Gagal login Discord:",
-      err.message
-    );
-  });
+client.login(TOKEN);
