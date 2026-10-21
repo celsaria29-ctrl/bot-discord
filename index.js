@@ -174,9 +174,11 @@ const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim();
 
 // Daftar model fallback (urutan prioritas). Bisa di-override lewat
 // env GEMINI_MODELS (opsional, pisahkan dengan koma) tanpa edit kode.
+// Seri 2.5 mulai mengembalikan HTTP 404 untuk API key baru (akses dibatasi Google).
+// Default sekarang memakai seri 3.x. Bisa di-override lewat env GEMINI_MODELS.
 const DEFAULT_GEMINI_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash-lite",
 ];
 
 const ENV_MODELS = (process.env.GEMINI_MODELS || "")
@@ -927,7 +929,13 @@ class GeminiProvider {
     };
     // Seri 2.5 flash(-lite) memakai jatah output untuk "thinking" kalau tidak dimatikan,
     // akibatnya teks bisa kosong/terpotong. Model lain tidak disentuh supaya tidak kena HTTP 400.
-    if (/^gemini-2\.5-flash/i.test(model)) config.thinkingConfig = { thinkingBudget: 0 };
+    if (/^gemini-2\.5-flash/i.test(model)) {
+      config.thinkingConfig = { thinkingBudget: 0 };
+    } else {
+      // Seri 3.x tetap "berpikir" secara default dan jatahnya ikut memakan output token.
+      // Beri ruang lebih supaya balasan pendek Cels tidak kosong/terpotong.
+      config.maxOutputTokens = Math.max(config.maxOutputTokens, 2048);
+    }
     if (opts.json) config.responseMimeType = "application/json";
     return config;
   }
